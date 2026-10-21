@@ -1,0 +1,7 @@
+numpy>=2.0
+scipy>=1.13
+pyrtlsdr[lib]>=0.3     # [lib] pulls pyrtlsdrlib, which bundles librtlsdr for Windows/macOS/Linux
+pyModeS>=3.0,<4        # v3 API: pyModeS.decode / PipeDecoder
+dash>=2.17
+plotly>=5.24           # go.Scattermap (MapLibre, no Mapbox token)
+pytest>=8

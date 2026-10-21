@@ -1,0 +1,9 @@
+[project]
+name = "adsb-il-tracker"
+version = "0.1.0"
+description = "Live ADS-B map around Petah Tikva from an RTL-SDR, with a NumPy/SciPy Mode S demodulator"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = [".", "tests"]
+testpaths = ["tests"]
