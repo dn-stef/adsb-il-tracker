@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import logging
+import os
+import threading
 import time
+import webbrowser
+from urllib.parse import quote
 
 import plotly.graph_objects as go
-from dash import Dash, Input, Output, dcc, html
+from dash import Dash, Input, Output, State, dcc, html, no_update
 
 import config
 import geofilter
@@ -15,6 +19,20 @@ SURFACE = "#fcfcfb"
 TEXT = "#0b0b0b"
 TEXT_2 = "#52514e"
 BORDER = "#e4e3de"
+
+# SDR state -> (badge colour, label). Unknown states fall back to "starting".
+SDR_BADGE = {
+    "connected": ("#1a7f37", "RTL-SDR connected"),
+    "disconnected": ("#cf222e", "RTL-SDR disconnected"),
+    "starting": ("#9a6700", "RTL-SDR starting…"),
+}
+# Lucide-style USB glyph, drawn in white on the coloured badge.
+USB_ICON = "data:image/svg+xml," + quote(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" '
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    '<circle cx="10" cy="7" r="1"/><circle cx="4" cy="20" r="1"/><path d="M4.7 19.3 19 5"/>'
+    '<path d="m21 3-3 1 2 2Z"/><path d="M9.26 7.68 5 12l2 5"/><path d="m10 14 5 2 3.5-3.5"/>'
+    '<path d="m18 12 1-1 1 1-1 1Z"/></svg>')
 
 
 def _fmt(value, fmt: str, unit: str = "") -> str:
@@ -33,7 +51,7 @@ def _visible(views: list[TrackedView], show_other: bool) -> list[TrackedView]:
     return [v for v in views if show_other or v.classification.is_commercial]
 
 
-def build_figure(views: list[TrackedView], show_other: bool = True) -> go.Figure:
+def build_figure(views: list[TrackedView], show_other: bool = True, view: dict | None = None) -> go.Figure:
     fig = go.Figure()
 
     ring_lat, ring_lon = geofilter.circle_points()
@@ -83,8 +101,8 @@ def build_figure(views: list[TrackedView], show_other: bool = True) -> go.Figure
         ))
 
     fig.update_layout(
-        map=dict(style=config.MAP_STYLE, zoom=config.MAP_ZOOM,
-                 center=dict(lat=config.BASE_LAT, lon=config.BASE_LON)),
+        map={"style": config.MAP_STYLE, "zoom": config.MAP_ZOOM,
+             "center": {"lat": config.BASE_LAT, "lon": config.BASE_LON}, **(view or {})},
         margin=dict(l=0, r=0, t=0, b=0),
         uirevision="keep",
         paper_bgcolor=SURFACE,
@@ -93,6 +111,13 @@ def build_figure(views: list[TrackedView], show_other: bool = True) -> go.Figure
         hoverlabel=dict(bgcolor="white", font_color=TEXT, bordercolor=BORDER),
     )
     return fig
+
+
+def merge_map_view(relayout: dict | None, view: dict | None) -> dict | None:
+    """Fold a map pan/zoom event into the stored view; None if the event has no map view keys."""
+    changes = {k[4:]: v for k, v in (relayout or {}).items()
+               if k in ("map.center", "map.zoom", "map.bearing", "map.pitch")}
+    return {**(view or {}), **changes} if changes else None
 
 
 def build_status(status: dict, views: list[TrackedView]) -> str:
@@ -106,6 +131,18 @@ def build_status(status: dict, views: list[TrackedView]) -> str:
             f"{len(in_range)} aircraft ≤ {config.RADIUS_KM:.0f} km ({commercial} commercial)  ·  "
             f"{no_pos} tracked without position  ·  "
             f"CRC ok {status['crc_ok']:,} / fixed {status['crc_fixed']:,} / discarded {status['crc_bad']:,}")
+
+
+def build_sdr_badge(status: dict) -> list:
+    state = status["sdr_state"]
+    color, label = SDR_BADGE.get(state, SDR_BADGE["starting"])
+    style = {"display": "inline-flex", "alignItems": "center", "gap": 8, "padding": "6px 14px",
+             "borderRadius": 999, "background": color, "color": "white", "fontWeight": 600,
+             "fontSize": 14, "boxShadow": f"0 0 0 3px {color}33"}
+    return [html.Span(title=status.get("sdr_error") or label, style=style, children=[
+        html.Img(src=USB_ICON, style={"width": 18, "height": 18}),
+        label,
+    ])]
 
 
 def build_table(views: list[TrackedView], show_other: bool, now: float) -> html.Table:
@@ -143,10 +180,11 @@ def create_app(receiver: Receiver) -> Dash:
     app = Dash(__name__, title="ADS-B · Petah Tikva")
     app.layout = html.Div(style={"fontFamily": "system-ui, -apple-system, Segoe UI, sans-serif",
                                  "background": SURFACE, "color": TEXT, "padding": "12px 16px"}, children=[
-        html.Div(style={"display": "flex", "flexWrap": "wrap", "alignItems": "baseline",
+        html.Div(style={"display": "flex", "flexWrap": "wrap", "alignItems": "center",
                         "gap": "8px 24px"}, children=[
             html.H2(f"ADS-B within {config.RADIUS_KM:.0f} km of {config.BASE_NAME}",
                     style={"margin": "0 0 4px 0", "fontSize": 20}),
+            html.Div(id="sdr-badge", children=build_sdr_badge(receiver.status())),
             dcc.Checklist(id="show-other", inline=True,
                           options=[{"label": " Show non-commercial / unknown", "value": "other"}],
                           value=["other"] if config.SHOW_NON_COMMERCIAL_DEFAULT else []),
@@ -155,17 +193,27 @@ def create_app(receiver: Receiver) -> Dash:
         dcc.Graph(id="map", style={"height": "68vh"}, config={"displaylogo": False, "scrollZoom": True}),
         html.Div(id="table", style={"overflowX": "auto", "marginTop": 12}),
         dcc.Interval(id="tick", interval=config.REFRESH_INTERVAL_MS),
+        # The user's pan/zoom, re-applied on every refresh so the map does not jump back.
+        dcc.Store(id="map-view"),
     ])
 
     @app.callback(Output("map", "figure"), Output("status", "children"), Output("table", "children"),
-                  Input("tick", "n_intervals"), Input("show-other", "value"))
-    def refresh(_n, show_value):
+                  Output("sdr-badge", "children"),
+                  Input("tick", "n_intervals"), Input("show-other", "value"), State("map-view", "data"))
+    def refresh(_n, show_value, view):
         now = time.time()
         views = receiver.store.snapshot(now)
         show_other = "other" in (show_value or [])
-        return (build_figure(views, show_other),
-                build_status(receiver.status(), views),
-                build_table(views, show_other, now))
+        status = receiver.status()
+        return (build_figure(views, show_other, view),
+                build_status(status, views),
+                build_table(views, show_other, now),
+                build_sdr_badge(status))
+
+    @app.callback(Output("map-view", "data"), Input("map", "relayoutData"), State("map-view", "data"))
+    def remember_view(relayout, view):
+        merged = merge_map_view(relayout, view)
+        return no_update if merged is None else merged
 
     return app
 
@@ -174,6 +222,10 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     receiver = Receiver()
     receiver.start()
+    # The debug reloader re-runs main() in a child process; only the first run opens a tab.
+    if config.OPEN_BROWSER and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+        url = f"http://{config.DASH_HOST}:{config.DASH_PORT}/"
+        threading.Timer(1.0, webbrowser.open, args=(url,)).start()
     try:
         create_app(receiver).run(host=config.DASH_HOST, port=config.DASH_PORT, debug=config.DASH_DEBUG)
     finally:

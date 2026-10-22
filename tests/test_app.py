@@ -41,6 +41,23 @@ def test_status_and_table_render():
     assert len(table.children[1].children) == 3
 
 
+def test_sdr_badge_colour_follows_state():
+    up = app.build_sdr_badge({"sdr_state": "connected", "sdr_error": None})[0]
+    down = app.build_sdr_badge({"sdr_state": "disconnected", "sdr_error": "OSError: no device"})[0]
+    assert "connected" in up.children[1] and up.style["background"] == app.SDR_BADGE["connected"][0]
+    assert down.style["background"] == app.SDR_BADGE["disconnected"][0] and down.title == "OSError: no device"
+
+
+def test_user_map_view_survives_refresh():
+    view = app.merge_map_view({"map.center": {"lat": 31.0, "lon": 35.0}, "map.zoom": 9,
+                               "map._derived": {}}, None)
+    assert view == {"center": {"lat": 31.0, "lon": 35.0}, "zoom": 9}
+    assert app.merge_map_view({"autosize": True}, view) is None
+    assert app.merge_map_view({"map.zoom": 11}, view)["center"] == {"lat": 31.0, "lon": 35.0}
+    fig = app.build_figure(_views(), view=view)
+    assert fig.layout.map.zoom == 9 and fig.layout.map.center.lat == 31.0
+
+
 def test_create_app_layout():
     dash_app = app.create_app(Receiver())
     ids = {getattr(c, "id", None) for c in dash_app.layout.children}
