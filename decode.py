@@ -53,14 +53,15 @@ def crc_ok(hex_msg: str) -> bool:
 def _syndrome_table(nbits: int) -> np.ndarray:
     synd = np.zeros(nbits, dtype=np.uint32)
     for j in range(nbits):
-        m = bytearray(nbits // 8)
-        m[j // 8] = 0x80 >> (j % 8)
-        synd[j] = crc_residual(bytes(m))
+        msg = bytearray(nbits // 8)
+        msg[j // 8] = 0x80 >> (j % 8)
+        synd[j] = crc_residual(bytes(msg))
     return synd
 
 
 LONG_SYNDROMES = _syndrome_table(LONG_BITS)
-_LONG_FIXABLE = {int(s): j for j, s in enumerate(LONG_SYNDROMES) if j >= 5}
+# Syndrome -> position of the single flipped bit. The 5 DF bits are never repaired.
+_FIXABLE_SYNDROMES = {int(s): j for j, s in enumerate(LONG_SYNDROMES) if j >= 5}
 
 
 def residuals_from_bits(bits: np.ndarray) -> np.ndarray:
@@ -117,8 +118,8 @@ class Demodulator:
         for start_us in (0.0, 1.0, 3.5, 4.5):
             s = int(round(start_us * self.sps))
             pulse[s:s + half] = True
-        self._tpl_score = np.where(pulse, 1.0 / pulse.sum(), -1.0 / (~pulse).sum()).astype(np.float32)
-        self._tpl_high = np.where(pulse, 1.0 / pulse.sum(), 0.0).astype(np.float32)
+        self._preamble_template = np.where(pulse, 1.0 / pulse.sum(), -1.0 / (~pulse).sum()).astype(np.float32)
+        self._pulse_template = np.where(pulse, 1.0 / pulse.sum(), 0.0).astype(np.float32)
         self._pre_len = pre_len
         self.frame_samples = pre_len + LONG_BITS * self.sps
 
@@ -130,8 +131,8 @@ class Demodulator:
 
     def reset(self) -> None:
         self._carry = np.zeros(0, dtype=np.float32)
-        self._carry_abs = 0
-        self._last_end_abs = -1
+        self._carry_start = 0
+        self._last_frame_end = -1
 
     def process(self, samples: np.ndarray, timestamp: float = 0.0) -> list[Frame]:
         samples = np.asarray(samples)
@@ -145,27 +146,26 @@ class Demodulator:
 
         carry_len = self._carry.size
         buf = np.concatenate([self._carry, mag]) if carry_len else mag
-        buf_abs = self._carry_abs
+        buf_start = self._carry_start
         t_buf0 = timestamp - carry_len / self.sample_rate_hz
 
         frames: list[Frame] = []
         n_starts = buf.size - self.frame_samples + 1
         if n_starts > 2:
-            frames = self._detect(buf, n_starts, buf_abs, t_buf0)
+            frames = self._detect(buf, n_starts, buf_start, t_buf0)
             keep = self.frame_samples + 2
         else:
             keep = buf.size
 
         self._carry = buf[buf.size - keep:].copy()
-        self._carry_abs = buf_abs + buf.size - keep
+        self._carry_start = buf_start + buf.size - keep
         return frames
 
-
-    def _detect(self, buf: np.ndarray, n_starts: int, buf_abs: int, t_buf0: float) -> list[Frame]:
+    def _detect(self, buf: np.ndarray, n_starts: int, buf_start: int, t_buf0: float) -> list[Frame]:
         noise = float(np.median(buf[:: max(1, buf.size // 65536)])) + 1e-9
 
-        score = signal.correlate(buf, self._tpl_score, mode="valid")[:n_starts]
-        high = signal.correlate(buf, self._tpl_high, mode="valid")[:n_starts]
+        score = signal.correlate(buf, self._preamble_template, mode="valid")[:n_starts]
+        high = signal.correlate(buf, self._pulse_template, mode="valid")[:n_starts]
         low = high - score
         good = (score > self.threshold * noise) & (high > self.min_ratio * low)
         if not good.any():
@@ -197,11 +197,11 @@ class Demodulator:
                 continue
             bits, df, fixed = choice
             p = int(peaks[k])
-            start_abs = buf_abs + p
-            if start_abs < self._last_end_abs:
+            frame_start = buf_start + p
+            if frame_start < self._last_frame_end:
                 self.stats.overlaps += 1
                 continue
-            self._last_end_abs = start_abs + self.frame_samples
+            self._last_frame_end = frame_start + self.frame_samples
             if fixed:
                 self.stats.crc_fixed += 1
             else:
@@ -221,7 +221,7 @@ class Demodulator:
                 return bits[k], int(df[k]), 0
         if self.fix_single_bit:
             for bits, df, resid in checked:
-                j = _LONG_FIXABLE.get(int(resid[k])) if resid[k] > 0 else None
+                j = _FIXABLE_SYNDROMES.get(int(resid[k])) if resid[k] > 0 else None
                 if j is not None:
                     repaired = bits[k].copy()
                     repaired[j] ^= 1
@@ -235,11 +235,11 @@ class Demodulator:
         return (early > late).astype(np.uint8)
 
     def _slice_phase_aware(self, buf: np.ndarray, peaks: np.ndarray, noise: float) -> np.ndarray:
-        m = buf - noise
+        centered = buf - noise
         pk = peaks[:, None]
-        on = m[pk + np.array([0, 2, 7, 9])].sum(axis=1)
-        after = m[pk + np.array([1, 3, 8, 10])].sum(axis=1)
-        before = m[pk + np.array([-1, 1, 6, 8])].sum(axis=1)
+        on = centered[pk + np.array([0, 2, 7, 9])].sum(axis=1)
+        after = centered[pk + np.array([1, 3, 8, 10])].sum(axis=1)
+        before = centered[pk + np.array([-1, 1, 6, 8])].sum(axis=1)
         eps = 1e-9
         phi_after = np.clip(after / np.maximum(on + after, eps), 0.0, 1.0)
         phi_before = np.clip(before / np.maximum(on + before, eps), 0.0, 1.0)
@@ -250,15 +250,16 @@ class Demodulator:
 
         n = peaks.size
         head, tail = (1.0 - phi) * amp, phi * amp
-        exp_a = np.stack([np.stack([tail, tail + head]), np.stack([np.zeros(n), head])])
-        exp_b = np.stack([np.stack([head, tail]), np.stack([head, tail])])
+        # Expected level of each sample in a chip, indexed [previous bit][bit].
+        expect_first = np.stack([np.stack([tail, tail + head]), np.stack([np.zeros(n), head])])
+        expect_second = np.stack([np.stack([head, tail]), np.stack([head, tail])])
 
         cost = np.stack([np.full(n, np.inf), np.zeros(n)])
         back = np.zeros((LONG_BITS, 2, n), dtype=np.uint8)
         for i in range(LONG_BITS):
-            a = m[data0 + 2 * i]
-            b = m[data0 + 2 * i + 1]
-            metric = cost[:, None, :] + (a - exp_a) ** 2 + (b - exp_b) ** 2
+            first = centered[data0 + 2 * i]
+            second = centered[data0 + 2 * i + 1]
+            metric = cost[:, None, :] + (first - expect_first) ** 2 + (second - expect_second) ** 2
             back[i] = np.argmin(metric, axis=0)
             cost = np.min(metric, axis=0)
 

@@ -37,8 +37,7 @@ class Receiver:
         self._sdr_error: str | None = None
         self.blocks_dropped = 0
         self.decoder_errors = 0
-        self._rate_hist: collections.deque = collections.deque(maxlen=64)
-
+        self._rate_history: collections.deque = collections.deque(maxlen=64)
 
     def start(self) -> None:
         if self._threads:
@@ -56,7 +55,6 @@ class Receiver:
         for t in self._threads:
             t.join(timeout)
         self._threads = []
-
 
     def _set_sdr_state(self, state: str, error: str | None = None) -> None:
         with self._status_lock:
@@ -119,13 +117,12 @@ class Receiver:
                 self.demod.reset()
                 log.exception("decoder error; block discarded")
 
-
     def status(self) -> dict:
         now = time.monotonic()
         s = self.demod.stats
         good = s.crc_ok + s.crc_fixed
-        self._rate_hist.append((now, good))
-        t0, g0 = next(((t, g) for t, g in self._rate_hist if now - t <= 30), (now, good))
+        self._rate_history.append((now, good))
+        t0, g0 = next(((t, g) for t, g in self._rate_history if now - t <= 30), (now, good))
         rate = (good - g0) / (now - t0) if now - t0 > 0.5 else 0.0
         with self._status_lock:
             state, err = self._sdr_state, self._sdr_error

@@ -1,8 +1,10 @@
+# Receiver site and display range
 BASE_NAME = "Petah Tikva"
 BASE_LAT = 32.0870
 BASE_LON = 34.8880
 RADIUS_KM = 200.0
 
+# RTL-SDR dongle
 SDR_DEVICE_INDEX = 0
 CENTER_FREQ_HZ = 1_090_000_000
 SAMPLE_RATE_HZ = 2_000_000
@@ -13,17 +15,20 @@ SAMPLES_PER_BLOCK = 256 * 1024
 SDR_RETRY_SECONDS = 5.0
 IQ_QUEUE_MAX_BLOCKS = 16
 
+# Demodulator
 PREAMBLE_THRESHOLD = 3.0
 PREAMBLE_MIN_RATIO = 2.0
 ACCEPTED_DOWNLINK_FORMATS = (17, 18)
 FIX_SINGLE_BIT_ERRORS = True
 
+# Tracking (all times in seconds)
 AIRCRAFT_TTL_S = 60.0
 POSITION_TTL_S = 30.0
 POSITION_ESTIMATE_AFTER_S = 3.0
 MIN_MESSAGES_TO_DISPLAY = 2
 CPR_PAIR_WINDOW_S = 10.0
 
+# Classification: callsign prefixes and ADS-B emitter categories
 COMMERCIAL_AIRLINE_PREFIXES = frozenset({
     "ELY", "ISR", "AIZ",
     "RJA", "MSR", "UAE", "ETD", "FDB", "QTR", "GFA", "ABY", "SVA", "KAC", "OMA", "MEA",
@@ -45,6 +50,7 @@ NON_COMMERCIAL_EMITTER_CATEGORIES = frozenset({
     "C1", "C2", "C3",
 })
 
+# Dashboard
 DASH_HOST = "127.0.0.1"
 DASH_PORT = 8050
 DASH_DEBUG = False

@@ -149,6 +149,7 @@ def build_table(views: list[TrackedView], show_other: bool, now: float) -> html.
     rows = sorted((v for v in _visible(views, show_other) if v.in_range or v.aircraft.lat is None),
                   key=lambda v: (v.distance_km is None, v.distance_km or 0))
     head = ["Callsign", "ICAO", "Class", "Altitude", "Speed", "V/S", "Distance", "Seen"]
+    first_numeric = head.index("Altitude")
     cell = {"padding": "4px 10px", "borderBottom": f"1px solid {BORDER}", "whiteSpace": "nowrap"}
     num = {**cell, "textAlign": "right", "fontVariantNumeric": "tabular-nums"}
     body = []
@@ -169,8 +170,10 @@ def build_table(views: list[TrackedView], show_other: bool, now: float) -> html.
             html.Td(f"{now - a.last_seen:.0f} s", style=num),
         ]))
     return html.Table(
-        [html.Thead(html.Tr([html.Th(h, style={**cell, "textAlign": "left", "color": TEXT_2,
-                                               "fontWeight": 600}) for h in head])),
+        # Numeric columns are right-aligned, so their headers are too.
+        [html.Thead(html.Tr([html.Th(h, style={**cell, "textAlign": "right" if i >= first_numeric else "left",
+                                               "color": TEXT_2, "fontWeight": 600})
+                             for i, h in enumerate(head)])),
          html.Tbody(body)],
         style={"borderCollapse": "collapse", "fontSize": 13, "width": "100%"},
     )

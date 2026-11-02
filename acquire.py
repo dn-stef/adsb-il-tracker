@@ -14,8 +14,8 @@ def bytes_to_iq(raw) -> np.ndarray:
     u8 = raw if isinstance(raw, np.ndarray) else np.frombuffer(raw, dtype=np.uint8)
     if u8.size % 2:
         u8 = u8[:-1]
-    f = (u8.astype(np.float32) - 127.5) / 127.5
-    return (f[0::2] + 1j * f[1::2]).astype(np.complex64)
+    scaled = (u8.astype(np.float32) - 127.5) / 127.5
+    return (scaled[0::2] + 1j * scaled[1::2]).astype(np.complex64)
 
 
 class SDRSource:

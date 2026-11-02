@@ -67,12 +67,12 @@ class AircraftStore:
             if signal_dbfs is not None:
                 ac.signal_dbfs = signal_dbfs
 
-            tc = msg.get("typecode")
+            typecode = msg.get("typecode")
             if msg.get("callsign"):
                 ac.callsign = msg["callsign"].strip("_ ").strip() or ac.callsign
                 cat = msg.get("category")
-                if isinstance(tc, int) and 1 <= tc <= 4 and cat:
-                    ac.emitter_category = f"{'DCBA'[tc - 1]}{cat}"
+                if isinstance(typecode, int) and 1 <= typecode <= 4 and cat:
+                    ac.emitter_category = f"{'DCBA'[typecode - 1]}{cat}"
             if msg.get("altitude") is not None:
                 ac.altitude_ft = msg["altitude"]
             if msg.get("groundspeed") is not None:
